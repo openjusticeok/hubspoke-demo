@@ -45,16 +45,13 @@ jobs:
       - name: Setup GCloud
         uses: google-github-actions/setup-gcloud@v2
 
-      - name: Build Container
-        run: nix build .#container --out-link container-result
-
-      - name: Push Container
+      - name: Build and Push Container
         run: |
           VERSION=${{ steps.version.outputs.sha }}
           IMAGE_URL="us-central1-docker.pkg.dev/hubspoke-demo-dev-b87d/repo/hubspoke-demo:$VERSION"
-          echo "Pushing to $IMAGE_URL"
-          # nix2container produces a script - run with bash
-          bash ./container-result copy docker://$IMAGE_URL
+          echo "Building and pushing to $IMAGE_URL"
+          # nix2container build and push in one step using copyToRegistry
+          nix run .#container.copyToRegistry -- docker://$IMAGE_URL
 
       - name: Build GCE Image
         run: nix build .#gce-image --out-link gce-result
