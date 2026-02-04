@@ -110,18 +110,8 @@ resource "google_cloud_run_service" "api" {
           }
         }
 
-        # Startup probe - give container time to start (R is slow to initialize)
-        startup_probe {
-          initial_delay_seconds = 30 # R + plumber takes 15-30s to start
-          period_seconds        = 10
-          timeout_seconds       = 10 # Give R time to respond
-          failure_threshold     = 18 # 18 * 10s = 180s = 3 minutes total
-
-          http_get {
-            path = "/healthz"
-            port = 8080
-          }
-        }
+        # TODO: Re-add startup probe once container is verified working
+        # Currently removed to debug container startup issues
       }
 
       service_account_name = var.service_account
