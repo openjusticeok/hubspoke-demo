@@ -50,6 +50,8 @@ jobs:
           echo "Building container and loading into Docker..."
           # nix2container provides .copyToDockerDaemon passthru
           nix run .#container.copyToDockerDaemon
+          echo "Images after build:"
+          docker images | grep hubspoke-demo || echo "No hubspoke-demo image found"
 
       - name: Push Container
         run: |
@@ -57,9 +59,16 @@ jobs:
           PROJECT_ID="hubspoke-demo-dev-b87d"
           REPO_URL="us-central1-docker.pkg.dev/$PROJECT_ID/repo/hubspoke-demo"
           
+          echo "Available images:"
+          docker images
+          
+          # Find the built image (could be :latest or :<hash>)
+          IMAGE_NAME=$(docker images --format "{{.Repository}}:{{.Tag}}" | grep "hubspoke-demo" | head -1)
+          echo "Found image: $IMAGE_NAME"
+          
           echo "Pushing to $REPO_URL:$VERSION..."
-          # Tag the loaded image and push
-          docker tag hubspoke-demo:latest $REPO_URL:$VERSION
+          # Tag and push
+          docker tag $IMAGE_NAME $REPO_URL:$VERSION
           skopeo copy docker-daemon:$REPO_URL:$VERSION docker://$REPO_URL:$VERSION
 
       - name: Build GCE Image
