@@ -34,12 +34,18 @@
           name = "hubspoke-demo";
           tag = self.shortRev or "latest";
           copyToRoot = pkgs.buildEnv {
-            name = "app-env";
+            name = "container-root";
             paths = [ 
               pkgs.rEnv
               pkgs.curl  # For health checks
+              # Copy plumber.R to /app in container
+              (pkgs.runCommand "app-files" {} ''
+                mkdir -p $out/app
+                cp ${./src/plumber.R} $out/app/plumber.R
+              '')
             ];
           };
+          
           config = {
             Cmd = [ 
               "Rscript" 

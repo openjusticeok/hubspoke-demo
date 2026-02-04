@@ -110,12 +110,12 @@ resource "google_cloud_run_service" "api" {
           }
         }
 
-        # Startup probe - give container 5 minutes to start
+        # Startup probe - give container time to start (R is slow to initialize)
         startup_probe {
-          initial_delay_seconds = 10
+          initial_delay_seconds = 30 # R + plumber takes 15-30s to start
           period_seconds        = 10
-          timeout_seconds       = 5
-          failure_threshold     = 30 # 30 * 10s = 300s = 5 minutes
+          timeout_seconds       = 10 # Give R time to respond
+          failure_threshold     = 18 # 18 * 10s = 180s = 3 minutes total
 
           http_get {
             path = "/healthz"
