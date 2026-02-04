@@ -82,12 +82,19 @@ jobs:
           skopeo copy docker-daemon:$REPO_URL:$SHA docker://$REPO_URL:$SHA
 
       - name: Build GCE Image
-        run: nix build .#gce-image --out-link gce-result
+        run: |
+          nix build .#gce-image --out-link gce-result
+          echo "GCE image build complete. Contents:"
+          ls -la gce-result/
+          find gce-result/ -type f -name "*.tar.gz" -o -name "*.raw*"
 
       - name: Push GCE Image
         run: |
           SHA=${{ steps.version.outputs.sha }}
-          gsutil cp gce-result/nixos-image-x86_64-linux.raw.tar.gz \
+          # Find the actual image file (NixOS GCE image naming varies)
+          IMAGE_FILE=$(find gce-result/ -type f \( -name "*.tar.gz" -o -name "*.raw*" \) | head -1)
+          echo "Found image file: $IMAGE_FILE"
+          gsutil cp "$IMAGE_FILE" \
             gs://hubspoke-demo-dev-nixos-images/nixos-image-$SHA.tar.gz
 
   deploy-dev:
