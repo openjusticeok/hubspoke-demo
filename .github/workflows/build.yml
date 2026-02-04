@@ -45,22 +45,23 @@ jobs:
         uses: google-github-actions/setup-gcloud@v2
 
       - name: Build Container
-        run: nix build .#container
+        run: nix build .#container --out-link container-result
 
       - name: Build GCE Image
-        run: nix build .#gce-image
+        run: nix build .#gce-image --out-link gce-result
 
       - name: Push Container
         run: |
           VERSION=${{ steps.version.outputs.sha }}
           IMAGE_URL="us-central1-docker.pkg.dev/hubspoke-demo-dev-b87d/repo/hubspoke-demo:$VERSION"
           echo "Pushing to $IMAGE_URL"
-          skopeo copy docker-archive:result docker://$IMAGE_URL
+          # nix2container produces a script that copies directly to registry
+          ./container-result copy docker://$IMAGE_URL
 
       - name: Push GCE Image
         run: |
           VERSION=${{ steps.version.outputs.sha }}
-          gsutil cp result/nixos-image-x86_64-linux.raw.tar.gz \
+          gsutil cp gce-result/nixos-image-x86_64-linux.raw.tar.gz \
             gs://hubspoke-demo-dev-nixos-images/nixos-image-$VERSION.tar.gz
 
       - name: Update Dev Config
