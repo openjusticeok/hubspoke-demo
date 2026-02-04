@@ -116,7 +116,6 @@ resource "google_cloud_run_service" "api" {
           period_seconds        = 10
           timeout_seconds       = 5
           failure_threshold     = 30 # 30 * 10s = 300s = 5 minutes
-          success_threshold     = 1
 
           http_get {
             path = "/healthz"

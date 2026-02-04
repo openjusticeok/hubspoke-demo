@@ -20,6 +20,12 @@ on:
       - '.gitignore'
       - 'CODEOWNERS'
   workflow_dispatch:
+    inputs:
+      force_rebuild:
+        description: 'Force rebuild even if artifacts exist'
+        required: false
+        default: false
+        type: boolean
 
 # CRITICAL: Concurrency Control - Cancel running dev deploy on new commit
 concurrency:
@@ -34,22 +40,21 @@ jobs:
   build:
     runs-on: ubuntu-latest
     outputs:
-      sha: ${{ steps.version.outputs.sha }}
+      sha: ${{ steps.check.outputs.sha }}
+      repo_url: ${{ steps.check.outputs.repo_url }}
+      bucket: ${{ steps.check.outputs.bucket }}
+      build_skipped: ${{ steps.check.outputs.exists }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
+      # OPTIMIZATION: Magic Nix Cache - Binary caching for Nix store
+      - uses: DeterminateSystems/magic-nix-cache-action@v2
+
       - uses: cachix/install-nix-action@v27
         with:
           nix_path: nixpkgs=channel:nixos-unstable
-
-      - name: Get Version
-        id: version
-        run: |
-          SHA=$(git rev-parse --short HEAD)
-          echo "sha=$SHA" >> $GITHUB_OUTPUT
-          echo "Building version: $SHA"
 
       - uses: 'google-github-actions/auth@v2'
         with:
@@ -59,17 +64,69 @@ jobs:
 
       - uses: 'google-github-actions/setup-gcloud@v2'
 
+      # OPTIMIZATION: Check for existing artifacts to skip unnecessary builds
+      - name: Check for Existing Artifacts
+        id: check
+        run: |
+          SHA=$(git rev-parse --short HEAD)
+          PROJECT="hubspoke-demo-dev-b87d"
+          REPO_URL="us-central1-docker.pkg.dev/$PROJECT/repo/hubspoke-demo"
+          BUCKET="hubspoke-demo-dev-nixos-images"
+          
+          echo "sha=$SHA" >> $GITHUB_OUTPUT
+          echo "repo_url=$REPO_URL" >> $GITHUB_OUTPUT
+          echo "bucket=$BUCKET" >> $GITHUB_OUTPUT
+          
+          # Check if force rebuild requested
+          if [[ "${{ github.event.inputs.force_rebuild }}" == "true" ]]; then
+            echo "::notice title=Force Rebuild::Force rebuild requested. Building regardless of existing artifacts."
+            echo "exists=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          # Check Container
+          echo "🔍 Checking Artifact Registry for container..."
+          if gcloud artifacts docker images describe "$REPO_URL:$SHA" > /dev/null 2>&1; then
+            CONTAINER_EXISTS=true
+            echo "✅ Container image exists"
+          else
+            CONTAINER_EXISTS=false
+            echo "❌ Container image not found"
+          fi
+          
+          # Check GCE Image
+          echo "🔍 Checking GCS for GCE image..."
+          if gsutil ls "gs://$BUCKET/nixos-image-$SHA.tar.gz" > /dev/null 2>&1; then
+            GCE_EXISTS=true
+            echo "✅ GCE image exists"
+          else
+            GCE_EXISTS=false
+            echo "❌ GCE image not found"
+          fi
+          
+          # Decision: Skip only if BOTH exist
+          if [[ "$CONTAINER_EXISTS" == "true" && "$GCE_EXISTS" == "true" ]]; then
+            echo "::notice title=Build Skipped::Artifacts for $SHA already exist. Skipping Nix builds."
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "::notice title=Build Required::Missing artifacts for $SHA. Running Nix builds."
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Configure Docker Auth
+        if: steps.check.outputs.exists != 'true'
         run: |
           # Configure docker to use gcloud credentials for Artifact Registry
           gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
 
       - name: Build & Push Container
+        if: steps.check.outputs.exists != 'true'
         run: |
+          echo "❄️ Building Container..."
           nix run .#container.copyToDockerDaemon
           
-          SHA=${{ steps.version.outputs.sha }}
-          REPO_URL="us-central1-docker.pkg.dev/hubspoke-demo-dev-b87d/repo/hubspoke-demo"
+          SHA=${{ steps.check.outputs.sha }}
+          REPO_URL="${{ steps.check.outputs.repo_url }}"
           
           echo "Available images:"
           docker images | grep hubspoke-demo
@@ -80,25 +137,34 @@ jobs:
           
           docker tag $IMAGE_NAME $REPO_URL:$SHA
           skopeo copy docker-daemon:$REPO_URL:$SHA docker://$REPO_URL:$SHA
+          echo "✅ Container pushed to $REPO_URL:$SHA"
 
       - name: Build GCE Image
+        if: steps.check.outputs.exists != 'true'
         run: |
+          echo "❄️ Building GCE Image..."
           nix build .#gce-image --out-link gce-result
           echo "GCE image build complete. Contents:"
           ls -la gce-result/
-          find gce-result/ -type f -name "*.tar.gz" -o -name "*.raw*"
+          find gce-result/ -type f \( -name "*.tar.gz" -o -name "*.raw*" \)
 
       - name: Push GCE Image
+        if: steps.check.outputs.exists != 'true'
         run: |
-          SHA=${{ steps.version.outputs.sha }}
+          SHA=${{ steps.check.outputs.sha }}
+          BUCKET="${{ steps.check.outputs.bucket }}"
+          
           # Find the actual image file (NixOS GCE image naming varies)
           IMAGE_FILE=$(find gce-result/ -type f \( -name "*.tar.gz" -o -name "*.raw*" \) | head -1)
           echo "Found image file: $IMAGE_FILE"
-          gsutil cp "$IMAGE_FILE" \
-            gs://hubspoke-demo-dev-nixos-images/nixos-image-$SHA.tar.gz
+          
+          gsutil cp "$IMAGE_FILE" "gs://$BUCKET/nixos-image-$SHA.tar.gz"
+          echo "✅ GCE image pushed to gs://$BUCKET/nixos-image-$SHA.tar.gz"
 
   deploy-dev:
     needs: build
+    # Run even if build was skipped (for tofu-only changes)
+    if: always() && needs.build.result != 'failure'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -119,6 +185,19 @@ jobs:
       - uses: opentofu/setup-opentofu@v1
         with:
           tofu_version: '1.8.1'
+
+      # OPTIMIZATION: Cache provider plugins
+      - uses: actions/cache@v4
+        with:
+          path: ~/.terraform.d/plugin-cache
+          key: tofu-plugins-${{ runner.os }}-${{ hashFiles('infra/.terraform.lock.hcl') }}
+          restore-keys: |
+            tofu-plugins-${{ runner.os }}-
+
+      - name: Configure Tofu Plugin Cache
+        run: |
+          mkdir -p ~/.terraform.d/plugin-cache
+          echo "plugin_cache_dir = \"$HOME/.terraform.d/plugin-cache\"" > ~/.terraformrc
 
       - name: Tofu Init
         working-directory: ./infra
