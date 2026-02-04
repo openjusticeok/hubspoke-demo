@@ -45,13 +45,18 @@ jobs:
       - name: Setup GCloud
         uses: google-github-actions/setup-gcloud@v2
 
-      - name: Build and Push Container
+      - name: Build Container
+        run: nix build .#container --out-link container-result
+
+      - name: Push Container
         run: |
           VERSION=${{ steps.version.outputs.sha }}
           IMAGE_URL="us-central1-docker.pkg.dev/hubspoke-demo-dev-b87d/repo/hubspoke-demo:$VERSION"
-          echo "Building and pushing to $IMAGE_URL"
-          # nix2container build and push in one step using copyToRegistry
-          nix run .#container.copyToRegistry -- docker://$IMAGE_URL
+          echo "Pushing to $IMAGE_URL"
+          # nix2container script loads into docker daemon
+          ./container-result
+          # Use skopeo to copy from docker daemon to registry
+          skopeo copy docker-daemon:hubspoke-demo:$VERSION docker://$IMAGE_URL
 
       - name: Build GCE Image
         run: nix build .#gce-image --out-link gce-result
