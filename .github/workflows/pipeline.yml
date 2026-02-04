@@ -1,0 +1,121 @@
+name: "CI/CD: Dev"
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'infra/prod.tfvars'
+      - 'README.md'
+      - '.gitignore'
+      - 'CODEOWNERS'
+  workflow_dispatch:
+
+# CRITICAL FIX: Concurrency Control
+# If a new commit comes in, cancel the running dev deploy
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.version.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: cachix/install-nix-action@v27
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+
+      - name: Get Version
+        id: version
+        run: |
+          SHA=$(git rev-parse --short HEAD)
+          echo "sha=$SHA" >> $GITHUB_OUTPUT
+          echo "Building version: $SHA"
+
+      - uses: 'google-github-actions/auth@v2'
+        with:
+          project_id: 'hubspoke-demo-dev-b87d'
+          workload_identity_provider: '${{ secrets.GCP_WIF_PROVIDER }}'
+          service_account: 'tofu-provisioner@hubspoke-demo-dev-b87d.iam.gserviceaccount.com'
+
+      - uses: 'google-github-actions/setup-gcloud@v2'
+
+      - name: Build & Push Container
+        run: |
+          nix run .#container.copyToDockerDaemon
+          
+          SHA=${{ steps.version.outputs.sha }}
+          REPO_URL="us-central1-docker.pkg.dev/hubspoke-demo-dev-b87d/repo/hubspoke-demo"
+          
+          echo "Available images:"
+          docker images | grep hubspoke-demo
+          
+          # Find and tag the built image
+          IMAGE_NAME=$(docker images --format "{{.Repository}}:{{.Tag}}" | grep "hubspoke-demo" | head -1)
+          echo "Found image: $IMAGE_NAME"
+          
+          docker tag $IMAGE_NAME $REPO_URL:$SHA
+          skopeo copy docker-daemon:$REPO_URL:$SHA docker://$REPO_URL:$SHA
+
+      - name: Build GCE Image
+        run: nix build .#gce-image --out-link gce-result
+
+      - name: Push GCE Image
+        run: |
+          SHA=${{ steps.version.outputs.sha }}
+          gsutil cp gce-result/nixos-image-x86_64-linux.raw.tar.gz \
+            gs://hubspoke-demo-dev-nixos-images/nixos-image-$SHA.tar.gz
+
+  deploy-dev:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse Environment Config
+        id: config
+        run: |
+          SA=$(grep -E '^\s*service_account\s*=' infra/dev.tfvars | head -1 | sed -E 's/.*=\s*"([^"]+)".*/\1/')
+          BUCKET=$(grep -E '^\s*state_bucket\s*=' infra/dev.tfvars | head -1 | sed -E 's/.*=\s*"([^"]+)".*/\1/')
+          echo "service_account=$SA" >> $GITHUB_OUTPUT
+          echo "state_bucket=$BUCKET" >> $GITHUB_OUTPUT
+
+      - uses: 'google-github-actions/auth@v2'
+        with:
+          workload_identity_provider: '${{ secrets.GCP_WIF_PROVIDER }}'
+          service_account: ${{ steps.config.outputs.service_account }}
+
+      - uses: opentofu/setup-opentofu@v1
+        with:
+          tofu_version: '1.8.1'
+
+      - name: Tofu Init
+        working-directory: ./infra
+        run: tofu init -backend-config="bucket=${{ steps.config.outputs.state_bucket }}"
+
+      - name: Tofu Plan
+        working-directory: ./infra
+        run: |
+          tofu plan \
+            -var-file="dev.tfvars" \
+            -var="image_version=${{ needs.build.outputs.sha }}" \
+            -no-color
+
+      - name: Tofu Apply
+        if: github.ref == 'refs/heads/main'
+        working-directory: ./infra
+        run: |
+          tofu apply \
+            -var-file="dev.tfvars" \
+            -var="image_version=${{ needs.build.outputs.sha }}" \
+            -auto-approve \
+            -no-color

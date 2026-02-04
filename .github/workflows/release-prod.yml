@@ -1,0 +1,65 @@
+name: "Release: Production"
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'infra/prod.tfvars'
+  workflow_dispatch:
+
+# CRITICAL FIX: Concurrency Control
+# Only one prod deploy at a time, do NOT cancel in-progress
+concurrency:
+  group: production-deployment
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy-prod:
+    environment: production
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse Environment Config
+        id: config
+        run: |
+          SA=$(grep -E '^\s*service_account\s*=' infra/prod.tfvars | head -1 | sed -E 's/.*=\s*"([^"]+)".*/\1/')
+          BUCKET=$(grep -E '^\s*state_bucket\s*=' infra/prod.tfvars | head -1 | sed -E 's/.*=\s*"([^"]+)".*/\1/')
+          VERSION=$(grep -E '^\s*image_version\s*=' infra/prod.tfvars | head -1 | sed -E 's/.*=\s*"([^"]+)".*/\1/')
+          echo "service_account=$SA" >> $GITHUB_OUTPUT
+          echo "state_bucket=$BUCKET" >> $GITHUB_OUTPUT
+          echo "image_version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Deploying version: $VERSION"
+
+      - uses: 'google-github-actions/auth@v2'
+        with:
+          workload_identity_provider: '${{ secrets.GCP_WIF_PROVIDER }}'
+          service_account: ${{ steps.config.outputs.service_account }}
+
+      - uses: opentofu/setup-opentofu@v1
+        with:
+          tofu_version: '1.8.1'
+
+      - name: Tofu Init
+        working-directory: ./infra
+        run: tofu init -backend-config="bucket=${{ steps.config.outputs.state_bucket }}"
+
+      - name: Tofu Plan
+        working-directory: ./infra
+        run: |
+          tofu plan \
+            -var-file="prod.tfvars" \
+            -no-color
+
+      - name: Tofu Apply
+        if: github.ref == 'refs/heads/main'
+        working-directory: ./infra
+        run: |
+          tofu apply \
+            -var-file="prod.tfvars" \
+            -auto-approve \
+            -no-color

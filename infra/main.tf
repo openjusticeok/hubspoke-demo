@@ -17,6 +17,17 @@ provider "google" {
   region  = var.region
 }
 
+# Enable required APIs
+resource "google_project_service" "artifact_registry" {
+  project = var.project_id
+  service = "artifactregistry.googleapis.com"
+}
+
+resource "google_project_service" "cloud_run" {
+  project = var.project_id
+  service = "run.googleapis.com"
+}
+
 # Artifact Storage
 resource "google_storage_bucket" "nixos_images" {
   name                     = var.artifact_bucket
@@ -26,6 +37,7 @@ resource "google_storage_bucket" "nixos_images" {
 }
 
 resource "google_artifact_registry_repository" "app_repo" {
+  depends_on    = [google_project_service.artifact_registry]
   location      = var.region
   repository_id = "repo"
   format        = "DOCKER"
@@ -33,6 +45,7 @@ resource "google_artifact_registry_repository" "app_repo" {
 
 # Allow the tofu-provisioner service account to push images
 resource "google_artifact_registry_repository_iam_member" "repo_writer" {
+  depends_on = [google_artifact_registry_repository.app_repo]
   repository = google_artifact_registry_repository.app_repo.name
   location   = var.region
   role       = "roles/artifactregistry.writer"
@@ -41,8 +54,9 @@ resource "google_artifact_registry_repository_iam_member" "repo_writer" {
 
 # Cloud Run Service
 resource "google_cloud_run_service" "api" {
-  name     = "hubspoke-demo"
-  location = var.region
+  depends_on = [google_project_service.cloud_run]
+  name       = "hubspoke-demo"
+  location   = var.region
 
   template {
     spec {
@@ -91,7 +105,8 @@ resource "google_cloud_run_service_iam_member" "public" {
 
 # GCE Image
 resource "google_compute_image" "nixos" {
-  name = "hubspoke-demo-${var.image_version}"
+  depends_on = [google_storage_bucket.nixos_images]
+  name       = "hubspoke-demo-${var.image_version}"
 
   raw_disk {
     source = "https://storage.googleapis.com/${var.artifact_bucket}/nixos-image-${var.image_version}.tar.gz"
