@@ -1,0 +1,3 @@
+# Protect production configuration
+# Requires approval from brancengregory for any changes to prod
+infra/prod.tfvars @brancengregory

@@ -1,0 +1,76 @@
+[env]
+GCP_PROJECT = "hubspoke-demo-dev"
+GCP_STAGING_BUCKET = "hubspoke-demo-dev-nixos-images"
+TF_VAR_project_id = "{{env.GCP_PROJECT}}"
+TF_VAR_staging_bucket = "{{env.GCP_STAGING_BUCKET}}"
+TF_VAR_image_version = "latest"
+
+[tasks.build]
+description = "Build all Nix artifacts"
+run = "nix build .#gce-image .#container"
+
+[tasks.build-container]
+description = "Build container only"
+run = "nix build .#container"
+
+[tasks.build-gce]
+description = "Build GCE image only"
+run = "nix build .#gce-image"
+
+[tasks.push-container]
+description = "Push container to Artifact Registry"
+depends = ["build-container"]
+run = """
+  VERSION=$(git rev-parse --short HEAD)
+  IMAGE_URL="us-central1-docker.pkg.dev/$GCP_PROJECT/repo/hubspoke-demo:$VERSION"
+  echo "Pushing to $IMAGE_URL"
+  skopeo copy docker-archive:result docker://$IMAGE_URL
+  echo "container_url=$IMAGE_URL" >> $GITHUB_OUTPUT
+"""
+
+[tasks.push-image]
+description = "Upload versioned GCE image to GCS"
+depends = ["build-gce"]
+run = """
+  VERSION=$(git rev-parse --short HEAD)
+  echo "Pushing version: $VERSION"
+  gsutil cp result/nixos-image-x86_64-linux.raw.tar.gz gs://$GCP_STAGING_BUCKET/nixos-image-$VERSION.tar.gz
+  echo "image_version=$VERSION" >> $GITHUB_OUTPUT
+"""
+
+[tasks.update-dev]
+description = "Update dev.tfvars with new image version"
+run = """
+  VERSION=$(git rev-parse --short HEAD)
+  echo "Updating dev.tfvars to version: $VERSION"
+  sed -i "s/image_version = \".*\"/image_version = \"$VERSION\"/" infra/dev.tfvars
+  git add infra/dev.tfvars
+  git commit -m "deploy(dev): update image version to $VERSION"
+  git push
+"""
+
+[tasks.deploy-local]
+description = "Build, push, and deploy locally"
+depends = ["push-container", "push-image"]
+run = """
+  VERSION=$(git rev-parse --short HEAD)
+  cd infra
+  tofu init
+  tofu apply -var="image_version=$VERSION" -auto-approve
+"""
+
+[tasks.plan]
+description = "Plan infrastructure changes"
+run = """
+  cd infra
+  tofu init
+  tofu plan
+"""
+
+[tasks.apply-dev]
+description = "Apply to dev environment"
+run = """
+  cd infra
+  tofu init
+  tofu apply -var-file=dev.tfvars -auto-approve
+"""

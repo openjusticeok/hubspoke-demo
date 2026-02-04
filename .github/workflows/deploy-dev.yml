@@ -1,0 +1,62 @@
+name: Deploy Dev
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'infra/dev.tfvars'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Parse Environment Config
+        id: config
+        run: |
+          # Extract service_account (ignores commented lines, handles whitespace)
+          SA=$(grep -E '^\s*service_account\s*=' infra/dev.tfvars | \
+               head -1 | \
+               sed -E 's/^\s*service_account\s*=\s*"([^"]+)".*/\1/')
+          
+          # Extract bucket
+          BUCKET=$(grep -E '^\s*staging_bucket\s*=' infra/dev.tfvars | \
+                   head -1 | \
+                   sed -E 's/^\s*staging_bucket\s*=\s*"([^"]+)".*/\1/')
+          
+          echo "Using Service Account: $SA"
+          echo "Using Bucket: $BUCKET"
+          
+          echo "service_account=$SA" >> $GITHUB_OUTPUT
+          echo "bucket=$BUCKET" >> $GITHUB_OUTPUT
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: '${{ secrets.GCP_WIF_PROVIDER }}'
+          service_account: ${{ steps.config.outputs.service_account }}
+
+      - name: Setup OpenTofu
+        uses: opentofu/setup-opentofu@v1
+        with:
+          tofu_version: '1.8.1'
+
+      - name: Tofu Init
+        working-directory: ./infra
+        run: tofu init -backend-config="bucket=${{ steps.config.outputs.bucket }}"
+
+      - name: Tofu Plan
+        working-directory: ./infra
+        run: tofu plan -var-file="dev.tfvars" -no-color
+
+      - name: Tofu Apply
+        if: github.ref == 'refs/heads/main'
+        working-directory: ./infra
+        run: tofu apply -var-file="dev.tfvars" -auto-approve -no-color
