@@ -45,8 +45,11 @@ jobs:
       - name: Setup GCloud
         uses: google-github-actions/setup-gcloud@v2
 
-      - name: Build Container
-        run: nix build .#container --out-link container-result
+      - name: Build and Load Container
+        run: |
+          echo "Building container and loading into Docker..."
+          # nix2container provides .copyToDockerDaemon passthru
+          nix run .#container.copyToDockerDaemon
 
       - name: Push Container
         run: |
@@ -54,18 +57,8 @@ jobs:
           PROJECT_ID="hubspoke-demo-dev-b87d"
           REPO_URL="us-central1-docker.pkg.dev/$PROJECT_ID/repo/hubspoke-demo"
           
-          echo "Preparing Docker Load Script..."
-          
-          # FIX: Dereference the symlink and copy to a writable file
-          # 'readlink -f' ensures we get the actual path in the store
-          cp "$(readlink -f container-result)" ./load-image.sh
-          chmod +x ./load-image.sh
-          
-          echo "Loading into Docker..."
-          ./load-image.sh
-          
           echo "Pushing to $REPO_URL:$VERSION..."
-          # Retag from the default name to our target
+          # Tag the loaded image and push
           docker tag hubspoke-demo:latest $REPO_URL:$VERSION
           skopeo copy docker-daemon:$REPO_URL:$VERSION docker://$REPO_URL:$VERSION
 
