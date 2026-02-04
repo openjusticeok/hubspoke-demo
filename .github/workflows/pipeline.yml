@@ -59,6 +59,11 @@ jobs:
 
       - uses: 'google-github-actions/setup-gcloud@v2'
 
+      - name: Configure Docker Auth
+        run: |
+          # Configure docker to use gcloud credentials for Artifact Registry
+          gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
+
       - name: Build & Push Container
         run: |
           nix run .#container.copyToDockerDaemon
