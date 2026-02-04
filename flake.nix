@@ -48,7 +48,7 @@
           
           config = {
             Cmd = [ 
-              "Rscript" 
+              "${pkgs.rEnv}/bin/Rscript"
               "-e" 
               "pr <- plumber::plumb('/app/plumber.R'); pr$run(host='0.0.0.0', port=8080)"
             ];
@@ -56,6 +56,7 @@
             Env = [ 
               "PORT=8080"
               "R_HOME=${pkgs.rEnv}/lib/R"
+              "PATH=${pkgs.rEnv}/bin:${pkgs.curl}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
             ];
             WorkingDir = "/app";
           };
