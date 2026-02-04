@@ -8,8 +8,7 @@ on:
       - 'flake.lock'
       - 'src/**'
       - 'mise.toml'
-    paths-ignore:
-      - 'infra/*.tfvars'
+      - '!infra/*.tfvars'
 
 permissions:
   contents: write
