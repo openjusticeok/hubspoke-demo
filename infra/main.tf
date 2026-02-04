@@ -43,13 +43,20 @@ resource "google_artifact_registry_repository" "app_repo" {
   format        = "DOCKER"
 }
 
-# Allow the tofu-provisioner service account to push images
+# Allow the tofu-provisioner service account to push images to Artifact Registry
 resource "google_artifact_registry_repository_iam_member" "repo_writer" {
   depends_on = [google_artifact_registry_repository.app_repo]
-  repository = google_artifact_registry_repository.app_repo.name
+  repository = google_artifact_registry_repository.app_repo.id # Use .id not .name for full resource path
   location   = var.region
   role       = "roles/artifactregistry.writer"
   member     = "serviceAccount:${var.service_account}"
+}
+
+# Required for Workload Identity Federation token generation
+resource "google_project_iam_member" "provisioner_token_creator" {
+  project = var.project_id
+  role    = "roles/iam.serviceAccountUser"
+  member  = "serviceAccount:${var.service_account}"
 }
 
 # Cloud Run Service

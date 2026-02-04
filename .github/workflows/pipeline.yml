@@ -1,3 +1,14 @@
+# CI/CD: Dev - Application Build and Deploy Pipeline
+#
+# IMPORTANT PREREQUISITE:
+# Base infrastructure must be provisioned manually first via tofu apply.
+# This includes: Artifact Registry, GCS buckets, IAM permissions, and GCP APIs.
+# Run: cd infra && tofu apply -var-file="dev.tfvars" -var="image_version=initial"
+#
+# This workflow assumes the "Landing Zone" (base infrastructure) already exists
+# and focuses on the "Application Zone" (build, push, deploy).
+# See README.md for initial setup instructions.
+
 name: "CI/CD: Dev"
 
 on:
@@ -10,8 +21,7 @@ on:
       - 'CODEOWNERS'
   workflow_dispatch:
 
-# CRITICAL FIX: Concurrency Control
-# If a new commit comes in, cancel the running dev deploy
+# CRITICAL: Concurrency Control - Cancel running dev deploy on new commit
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
