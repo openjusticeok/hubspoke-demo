@@ -19,7 +19,7 @@ provider "google" {
 
 # Artifact Storage
 resource "google_storage_bucket" "nixos_images" {
-  name                     = var.staging_bucket
+  name                     = var.artifact_bucket
   location                 = "US"
   force_destroy            = true
   public_access_prevention = "enforced"
@@ -86,7 +86,7 @@ resource "google_compute_image" "nixos" {
   name = "hubspoke-demo-${var.image_version}"
 
   raw_disk {
-    source = "https://storage.googleapis.com/${google_storage_bucket.nixos_images.name}/nixos-image-${var.image_version}.tar.gz"
+    source = "https://storage.googleapis.com/${var.artifact_bucket}/nixos-image-${var.image_version}.tar.gz"
   }
 
   guest_os_features {

@@ -22,21 +22,21 @@ jobs:
       - name: Parse Environment Config
         id: config
         run: |
-          # Extract service_account (ignores commented lines, handles whitespace)
+          # Extract state_bucket (Tofu backend)
+          STATE_BUCKET=$(grep -E '^\s*state_bucket\s*=' infra/prod.tfvars | \
+                        head -1 | \
+                        sed -E 's/^\s*state_bucket\s*=\s*"([^"]+)".*/\1/')
+          
+          # Extract service_account
           SA=$(grep -E '^\s*service_account\s*=' infra/prod.tfvars | \
                head -1 | \
                sed -E 's/^\s*service_account\s*=\s*"([^"]+)".*/\1/')
           
-          # Extract bucket
-          BUCKET=$(grep -E '^\s*staging_bucket\s*=' infra/prod.tfvars | \
-                   head -1 | \
-                   sed -E 's/^\s*staging_bucket\s*=\s*"([^"]+)".*/\1/')
+          echo "State Bucket (Backend): $STATE_BUCKET"
+          echo "Service Account: $SA"
           
-          echo "Using Service Account: $SA"
-          echo "Using Bucket: $BUCKET"
-          
+          echo "state_bucket=$STATE_BUCKET" >> $GITHUB_OUTPUT
           echo "service_account=$SA" >> $GITHUB_OUTPUT
-          echo "bucket=$BUCKET" >> $GITHUB_OUTPUT
 
       - name: Authenticate to GCP
         uses: google-github-actions/auth@v2
@@ -51,7 +51,7 @@ jobs:
 
       - name: Tofu Init
         working-directory: ./infra
-        run: tofu init -backend-config="bucket=${{ steps.config.outputs.bucket }}"
+        run: tofu init -backend-config="bucket=${{ steps.config.outputs.state_bucket }}"
 
       - name: Tofu Plan
         working-directory: ./infra

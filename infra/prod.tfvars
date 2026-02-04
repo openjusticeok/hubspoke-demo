@@ -3,8 +3,14 @@
 
 project_id      = "hubspoke-demo-prod-f01c"
 service_account = "tofu-provisioner@hubspoke-demo-prod-f01c.iam.gserviceaccount.com"
-staging_bucket  = "hubspoke-demo-prod-nixos-images"
-image_version   = "PLACEHOLDER"
-region          = "us-central1"
-environment     = "prod"
-deploy_vm       = true
+
+# Tofu State Backend (managed by infrastructure repo)
+state_bucket = "hubspoke-demo-prod-tfstate"
+
+# Artifact Storage (for NixOS images)
+artifact_bucket = "hubspoke-demo-prod-nixos-images"
+
+image_version = "PLACEHOLDER"
+region        = "us-central1"
+environment   = "prod"
+deploy_vm     = true

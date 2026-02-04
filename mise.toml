@@ -1,8 +1,8 @@
 [env]
 GCP_PROJECT = "hubspoke-demo-dev"
-GCP_STAGING_BUCKET = "hubspoke-demo-dev-nixos-images"
+GCP_ARTIFACT_BUCKET = "hubspoke-demo-dev-nixos-images"
 TF_VAR_project_id = "{{env.GCP_PROJECT}}"
-TF_VAR_staging_bucket = "{{env.GCP_STAGING_BUCKET}}"
+TF_VAR_artifact_bucket = "{{env.GCP_ARTIFACT_BUCKET}}"
 TF_VAR_image_version = "latest"
 
 [tasks.build]
@@ -34,7 +34,7 @@ depends = ["build-gce"]
 run = """
   VERSION=$(git rev-parse --short HEAD)
   echo "Pushing version: $VERSION"
-  gsutil cp result/nixos-image-x86_64-linux.raw.tar.gz gs://$GCP_STAGING_BUCKET/nixos-image-$VERSION.tar.gz
+  gsutil cp result/nixos-image-x86_64-linux.raw.tar.gz gs://$GCP_ARTIFACT_BUCKET/nixos-image-$VERSION.tar.gz
   echo "image_version=$VERSION" >> $GITHUB_OUTPUT
 """
 

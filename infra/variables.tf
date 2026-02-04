@@ -19,8 +19,13 @@ variable "image_version" {
   type        = string
 }
 
-variable "staging_bucket" {
-  description = "GCS bucket for NixOS images"
+variable "state_bucket" {
+  description = "The Tofu state backend bucket (managed by infrastructure, format: {project_id}-tfstate)"
+  type        = string
+}
+
+variable "artifact_bucket" {
+  description = "The GCS bucket for storing NixOS images (created by this repo)"
   type        = string
 }
 
