@@ -31,6 +31,14 @@ resource "google_artifact_registry_repository" "app_repo" {
   format        = "DOCKER"
 }
 
+# Allow the tofu-provisioner service account to push images
+resource "google_artifact_registry_repository_iam_member" "repo_writer" {
+  repository = google_artifact_registry_repository.app_repo.name
+  location   = var.region
+  role       = "roles/artifactregistry.writer"
+  member     = "serviceAccount:${var.service_account}"
+}
+
 # Cloud Run Service
 resource "google_cloud_run_service" "api" {
   name     = "hubspoke-demo"
