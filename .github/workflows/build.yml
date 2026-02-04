@@ -9,6 +9,7 @@ on:
       - 'src/**'
       - 'mise.toml'
       - '!infra/*.tfvars'
+  workflow_dispatch:
 
 permissions:
   contents: write

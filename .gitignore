@@ -1,0 +1,26 @@
+# Nix
+result
+result-*
+*.drv
+
+# OpenTofu / Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars.json
+
+# Local env
+.env
+.envrc
+.direnv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
