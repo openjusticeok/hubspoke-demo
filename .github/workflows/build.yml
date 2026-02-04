@@ -51,12 +51,23 @@ jobs:
       - name: Push Container
         run: |
           VERSION=${{ steps.version.outputs.sha }}
-          IMAGE_URL="us-central1-docker.pkg.dev/hubspoke-demo-dev-b87d/repo/hubspoke-demo:$VERSION"
-          echo "Pushing to $IMAGE_URL"
-          # nix2container script loads into docker daemon
-          ./container-result
-          # Use skopeo to copy from docker daemon to registry
-          skopeo copy docker-daemon:hubspoke-demo:$VERSION docker://$IMAGE_URL
+          PROJECT_ID="hubspoke-demo-dev-b87d"
+          REPO_URL="us-central1-docker.pkg.dev/$PROJECT_ID/repo/hubspoke-demo"
+          
+          echo "Preparing Docker Load Script..."
+          
+          # FIX: Dereference the symlink and copy to a writable file
+          # 'readlink -f' ensures we get the actual path in the store
+          cp "$(readlink -f container-result)" ./load-image.sh
+          chmod +x ./load-image.sh
+          
+          echo "Loading into Docker..."
+          ./load-image.sh
+          
+          echo "Pushing to $REPO_URL:$VERSION..."
+          # Retag from the default name to our target
+          docker tag hubspoke-demo:latest $REPO_URL:$VERSION
+          skopeo copy docker-daemon:$REPO_URL:$VERSION docker://$REPO_URL:$VERSION
 
       - name: Build GCE Image
         run: nix build .#gce-image --out-link gce-result
