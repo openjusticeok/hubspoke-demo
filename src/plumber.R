@@ -1,5 +1,6 @@
 # Hub and Spoke Demo API
 # A simple plumber API for demonstrating NixOS + OpenTofu deployments
+# Test: Workflow trigger validation
 
 library(plumber)
 
