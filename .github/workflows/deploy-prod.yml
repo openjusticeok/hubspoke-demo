@@ -4,7 +4,8 @@ on:
   push:
     branches: [main]
     paths:
-      - 'infra/prod.tfvars'
+      - 'infra/**'
+      - '.github/workflows/deploy-prod.yml'
   workflow_dispatch:
 
 permissions:
