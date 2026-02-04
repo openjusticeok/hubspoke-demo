@@ -28,6 +28,18 @@ resource "google_project_service" "cloud_run" {
   service = "run.googleapis.com"
 }
 
+resource "google_project_service" "compute" {
+  project = var.project_id
+  service = "compute.googleapis.com"
+}
+
+# VPC Network for GCE instances
+resource "google_compute_network" "vpc" {
+  depends_on              = [google_project_service.compute]
+  name                    = "hubspoke-vpc"
+  auto_create_subnetworks = true
+}
+
 # Artifact Storage
 resource "google_storage_bucket" "nixos_images" {
   name                     = var.artifact_bucket
@@ -66,6 +78,13 @@ resource "google_cloud_run_service" "api" {
   location   = var.region
 
   template {
+    metadata {
+      annotations = {
+        # Allow up to 10 minutes for the container to start (R + plumber can be slow)
+        "run.googleapis.com/startup-cpu-boost" = "true"
+      }
+    }
+
     spec {
       containers {
         image = "us-central1-docker.pkg.dev/${var.project_id}/repo/hubspoke-demo:${var.image_version}"
@@ -86,8 +105,22 @@ resource "google_cloud_run_service" "api" {
 
         resources {
           limits = {
-            cpu    = "1000m"
-            memory = "512Mi"
+            cpu    = "2000m"
+            memory = "1Gi"
+          }
+        }
+
+        # Startup probe - give container 5 minutes to start
+        startup_probe {
+          initial_delay_seconds = 10
+          period_seconds        = 10
+          timeout_seconds       = 5
+          failure_threshold     = 30 # 30 * 10s = 300s = 5 minutes
+          success_threshold     = 1
+
+          http_get {
+            path = "/healthz"
+            port = 8080
           }
         }
       }
@@ -139,6 +172,7 @@ resource "google_compute_image" "nixos" {
 
 # Optional: GCE Instance
 resource "google_compute_instance" "api" {
+  depends_on   = [google_compute_network.vpc]
   count        = var.deploy_vm ? 1 : 0
   name         = "hubspoke-demo-${var.environment}"
   machine_type = "e2-medium"
@@ -151,7 +185,7 @@ resource "google_compute_instance" "api" {
   }
 
   network_interface {
-    network = "default"
+    network = google_compute_network.vpc.self_link
     access_config {}
   }
 
