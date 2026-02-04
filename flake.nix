@@ -37,7 +37,8 @@
             name = "container-root";
             paths = [ 
               pkgs.rEnv
-              pkgs.curl  # For health checks
+              pkgs.curl        # For health checks
+              pkgs.coreutils   # Essential: provides uname, which, cat, etc.
               # Copy plumber.R to /app in container
               (pkgs.runCommand "app-files" {} ''
                 mkdir -p $out/app
@@ -56,7 +57,8 @@
             Env = [ 
               "PORT=8080"
               "R_HOME=${pkgs.rEnv}/lib/R"
-              "PATH=${pkgs.rEnv}/bin:${pkgs.curl}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+              "R_LIBS_USER=${pkgs.rEnv}/lib/R/library"
+              "PATH=${pkgs.rEnv}/bin:${pkgs.coreutils}/bin:${pkgs.curl}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
             ];
             WorkingDir = "/app";
           };
