@@ -53,9 +53,8 @@ jobs:
           VERSION=${{ steps.version.outputs.sha }}
           IMAGE_URL="us-central1-docker.pkg.dev/hubspoke-demo-dev-b87d/repo/hubspoke-demo:$VERSION"
           echo "Pushing to $IMAGE_URL"
-          # nix2container produces a script - make executable and run
-          chmod +x ./container-result
-          ./container-result copy docker://$IMAGE_URL
+          # nix2container produces a script - run with bash
+          bash ./container-result copy docker://$IMAGE_URL
 
       - name: Build GCE Image
         run: nix build .#gce-image --out-link gce-result
