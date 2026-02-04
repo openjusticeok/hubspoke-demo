@@ -63,7 +63,7 @@ resource "google_cloud_run_service" "api" {
         }
       }
 
-      service_account_name = data.google_service_account.default.email
+      service_account_name = var.service_account
     }
   }
 
@@ -136,7 +136,4 @@ resource "google_compute_instance" "api" {
   }
 }
 
-# Data sources
-data "google_service_account" "default" {
-  account_id = "${var.project_id}-sa"
-}
+# Service account passed via tfvars variable

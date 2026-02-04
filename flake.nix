@@ -65,6 +65,17 @@
         inherit system;
         modules = [
           ({ pkgs, ... }: {
+            nixpkgs.overlays = [
+              (final: prev: {
+                rEnv = prev.rWrapper.override {
+                  packages = with prev.rPackages; [
+                    plumber
+                    jsonlite
+                  ];
+                };
+              })
+            ];
+            
             system.stateVersion = "25.05";
             
             # Basic services
@@ -96,7 +107,7 @@
               wantedBy = [ "multi-user.target" ];
               serviceConfig = {
                 Type = "simple";
-                ExecStart = "${pkgs.rEnv}/bin/Rscript -e 'pr <- plumber::plumb(\\'/etc/plumber.R\\'); pr$run(host=\\'0.0.0.0\\', port=8080)'";
+                ExecStart = "${pkgs.rEnv}/bin/Rscript -e 'pr <- plumber::plumb(\"/etc/plumber.R\"); pr$run(host=\"0.0.0.0\", port=8080)'";
                 Restart = "always";
                 RestartSec = 10;
                 Environment = "PORT=8080";
