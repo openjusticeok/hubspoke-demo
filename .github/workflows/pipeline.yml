@@ -1,4 +1,4 @@
-# CI/CD: Dev - Application Build and Deploy Pipeline
+# CI/CD: Dev - Application Build and Deploy Pipeline (Fan-Out/Fan-In)
 #
 # IMPORTANT PREREQUISITE:
 # Base infrastructure must be provisioned manually first via tofu apply.
@@ -8,6 +8,10 @@
 # This workflow assumes the "Landing Zone" (base infrastructure) already exists
 # and focuses on the "Application Zone" (build, push, deploy).
 # See README.md for initial setup instructions.
+#
+# ARCHITECTURE: Fan-Out / Fan-In
+# - Fan-Out: build-container and build-gce run in parallel (each with full 14GB disk)
+# - Fan-In: deploy-dev waits for both, then deploys infrastructure
 
 name: "CI/CD: Dev"
 
@@ -37,29 +41,27 @@ permissions:
   id-token: write
 
 jobs:
-  build:
+  # --- FAN-OUT: Build Container (14GB dedicated disk space) ---
+  build-container:
     runs-on: ubuntu-latest
     outputs:
-      sha: ${{ steps.check.outputs.sha }}
-      repo_url: ${{ steps.check.outputs.repo_url }}
-      bucket: ${{ steps.check.outputs.bucket }}
-      build_skipped: ${{ steps.check.outputs.exists }}
+      sha: ${{ steps.version.outputs.sha }}
+      repo_url: ${{ steps.version.outputs.repo_url }}
+      container_exists: ${{ steps.check.outputs.container_exists }}
     steps:
-      # FREE DISK SPACE: Required for GCE image builds (VM images are large)
-      - name: Free Disk Space (Ubuntu)
-        uses: jlumbroso/free-disk-space@main
-        with:
-          tool-cache: false
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: true
-          docker-images: true
-          swap-storage: true
-
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Get Version
+        id: version
+        run: |
+          SHA=$(git rev-parse --short HEAD)
+          PROJECT="hubspoke-demo-dev-b87d"
+          REPO_URL="us-central1-docker.pkg.dev/$PROJECT/repo/hubspoke-demo"
+          echo "sha=$SHA" >> $GITHUB_OUTPUT
+          echo "repo_url=$REPO_URL" >> $GITHUB_OUTPUT
+          echo "Building version: $SHA"
 
       # OPTIMIZATION: Magic Nix Cache - Binary caching for Nix store
       - uses: DeterminateSystems/magic-nix-cache-action@v2
@@ -76,74 +78,46 @@ jobs:
 
       - uses: 'google-github-actions/setup-gcloud@v2'
 
-      # OPTIMIZATION: Check for existing artifacts to skip unnecessary builds
-      - name: Check for Existing Artifacts
+      # Check for existing container
+      - name: Check for Existing Container
         id: check
         run: |
-          SHA=$(git rev-parse --short HEAD)
-          PROJECT="hubspoke-demo-dev-b87d"
-          REPO_URL="us-central1-docker.pkg.dev/$PROJECT/repo/hubspoke-demo"
-          BUCKET="hubspoke-demo-dev-nixos-images"
-          
-          echo "sha=$SHA" >> $GITHUB_OUTPUT
-          echo "repo_url=$REPO_URL" >> $GITHUB_OUTPUT
-          echo "bucket=$BUCKET" >> $GITHUB_OUTPUT
+          SHA=${{ steps.version.outputs.sha }}
+          REPO_URL="${{ steps.version.outputs.repo_url }}"
           
           # Check if force rebuild requested
           if [[ "${{ github.event.inputs.force_rebuild }}" == "true" ]]; then
-            echo "::notice title=Force Rebuild::Force rebuild requested. Building regardless of existing artifacts."
-            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "::notice title=Force Rebuild::Force rebuild requested. Building container."
+            echo "container_exists=false" >> $GITHUB_OUTPUT
             exit 0
           fi
           
-          # Check Container
           echo "🔍 Checking Artifact Registry for container..."
           if gcloud artifacts docker images describe "$REPO_URL:$SHA" > /dev/null 2>&1; then
-            CONTAINER_EXISTS=true
-            echo "✅ Container image exists"
+            echo "::notice title=Container Exists::Image $SHA already exists. Skipping build."
+            echo "container_exists=true" >> $GITHUB_OUTPUT
           else
-            CONTAINER_EXISTS=false
-            echo "❌ Container image not found"
-          fi
-          
-          # Check GCE Image
-          echo "🔍 Checking GCS for GCE image..."
-          if gsutil ls "gs://$BUCKET/nixos-image-$SHA.tar.gz" > /dev/null 2>&1; then
-            GCE_EXISTS=true
-            echo "✅ GCE image exists"
-          else
-            GCE_EXISTS=false
-            echo "❌ GCE image not found"
-          fi
-          
-          # Decision: Skip only if BOTH exist
-          if [[ "$CONTAINER_EXISTS" == "true" && "$GCE_EXISTS" == "true" ]]; then
-            echo "::notice title=Build Skipped::Artifacts for $SHA already exist. Skipping Nix builds."
-            echo "exists=true" >> $GITHUB_OUTPUT
-          else
-            echo "::notice title=Build Required::Missing artifacts for $SHA. Running Nix builds."
-            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "::notice title=Build Required::Container image not found. Building."
+            echo "container_exists=false" >> $GITHUB_OUTPUT
           fi
 
       - name: Configure Docker Auth
-        if: steps.check.outputs.exists != 'true'
+        if: steps.check.outputs.container_exists != 'true'
         run: |
-          # Configure docker to use gcloud credentials for Artifact Registry
           gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
 
       - name: Build & Push Container
-        if: steps.check.outputs.exists != 'true'
+        if: steps.check.outputs.container_exists != 'true'
         run: |
           echo "❄️ Building Container..."
           nix run .#container.copyToDockerDaemon
           
-          SHA=${{ steps.check.outputs.sha }}
-          REPO_URL="${{ steps.check.outputs.repo_url }}"
+          SHA=${{ steps.version.outputs.sha }}
+          REPO_URL="${{ steps.version.outputs.repo_url }}"
           
           echo "Available images:"
           docker images | grep hubspoke-demo
           
-          # Find and tag the built image
           IMAGE_NAME=$(docker images --format "{{.Repository}}:{{.Tag}}" | grep "hubspoke-demo" | head -1)
           echo "Found image: $IMAGE_NAME"
           
@@ -151,8 +125,67 @@ jobs:
           skopeo copy docker-daemon:$REPO_URL:$SHA docker://$REPO_URL:$SHA
           echo "✅ Container pushed to $REPO_URL:$SHA"
 
+  # --- FAN-OUT: Build GCE Image (14GB dedicated disk space, parallel to container) ---
+  build-gce:
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.version.outputs.sha }}
+      bucket: ${{ steps.version.outputs.bucket }}
+      gce_exists: ${{ steps.check.outputs.gce_exists }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get Version
+        id: version
+        run: |
+          SHA=$(git rev-parse --short HEAD)
+          BUCKET="hubspoke-demo-dev-nixos-images"
+          echo "sha=$SHA" >> $GITHUB_OUTPUT
+          echo "bucket=$BUCKET" >> $GITHUB_OUTPUT
+          echo "Building GCE image version: $SHA"
+
+      # OPTIMIZATION: Magic Nix Cache - Binary caching for Nix store
+      - uses: DeterminateSystems/magic-nix-cache-action@v2
+
+      - uses: cachix/install-nix-action@v27
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+
+      - uses: 'google-github-actions/auth@v2'
+        with:
+          project_id: 'hubspoke-demo-dev-b87d'
+          workload_identity_provider: '${{ secrets.GCP_WIF_PROVIDER }}'
+          service_account: 'tofu-provisioner@hubspoke-demo-dev-b87d.iam.gserviceaccount.com'
+
+      - uses: 'google-github-actions/setup-gcloud@v2'
+
+      # Check for existing GCE image
+      - name: Check for Existing GCE Image
+        id: check
+        run: |
+          SHA=${{ steps.version.outputs.sha }}
+          BUCKET="${{ steps.version.outputs.bucket }}"
+          
+          # Check if force rebuild requested
+          if [[ "${{ github.event.inputs.force_rebuild }}" == "true" ]]; then
+            echo "::notice title=Force Rebuild::Force rebuild requested. Building GCE image."
+            echo "gce_exists=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          echo "🔍 Checking GCS for GCE image..."
+          if gsutil ls "gs://$BUCKET/nixos-image-$SHA.tar.gz" > /dev/null 2>&1; then
+            echo "::notice title=GCE Image Exists::Image $SHA already exists. Skipping build."
+            echo "gce_exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "::notice title=Build Required::GCE image not found. Building."
+            echo "gce_exists=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Build GCE Image
-        if: steps.check.outputs.exists != 'true'
+        if: steps.check.outputs.gce_exists != 'true'
         run: |
           echo "❄️ Building GCE Image..."
           nix build .#gce-image --out-link gce-result
@@ -161,22 +194,22 @@ jobs:
           find gce-result/ -type f \( -name "*.tar.gz" -o -name "*.raw*" \)
 
       - name: Push GCE Image
-        if: steps.check.outputs.exists != 'true'
+        if: steps.check.outputs.gce_exists != 'true'
         run: |
-          SHA=${{ steps.check.outputs.sha }}
-          BUCKET="${{ steps.check.outputs.bucket }}"
+          SHA=${{ steps.version.outputs.sha }}
+          BUCKET="${{ steps.version.outputs.bucket }}"
           
-          # Find the actual image file (NixOS GCE image naming varies)
           IMAGE_FILE=$(find gce-result/ -type f \( -name "*.tar.gz" -o -name "*.raw*" \) | head -1)
           echo "Found image file: $IMAGE_FILE"
           
           gsutil cp "$IMAGE_FILE" "gs://$BUCKET/nixos-image-$SHA.tar.gz"
           echo "✅ GCE image pushed to gs://$BUCKET/nixos-image-$SHA.tar.gz"
 
+  # --- FAN-IN: Deploy (waits for both builds, each with full disk space) ---
   deploy-dev:
-    needs: build
-    # Run even if build was skipped (for tofu-only changes)
-    if: always() && needs.build.result != 'failure'
+    needs: [build-container, build-gce]
+    # Run even if one build was skipped (as long as neither failed)
+    if: always() && needs.build-container.result != 'failure' && needs.build-gce.result != 'failure'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -220,7 +253,7 @@ jobs:
         run: |
           tofu plan \
             -var-file="dev.tfvars" \
-            -var="image_version=${{ needs.build.outputs.sha }}" \
+            -var="image_version=${{ needs.build-container.outputs.sha }}" \
             -no-color
 
       - name: Tofu Apply
@@ -229,6 +262,6 @@ jobs:
         run: |
           tofu apply \
             -var-file="dev.tfvars" \
-            -var="image_version=${{ needs.build.outputs.sha }}" \
+            -var="image_version=${{ needs.build-container.outputs.sha }}" \
             -auto-approve \
             -no-color
