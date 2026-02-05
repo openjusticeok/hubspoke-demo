@@ -1,87 +1,88 @@
 {
-  description = "Hub and Spoke Demo: Plumber R API with NixOS + OpenTofu";
+  description = "Hub & Spoke Demo: R + Plumber (Idiomatic rstats-on-nix + nix2container)";
 
   inputs = {
+    # Standard NixOS for system tools
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    
+    # R-optimized nixpkgs (Latest: 2026-02-05)
+    r-nixpkgs.url = "github:rstats-on-nix/nixpkgs/2026-02-05";
+
     nix2container = {
       url = "github:nlewo/nix2container";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
 
-  outputs = { self, nixpkgs, nix2container, ... }:
+  outputs = { self, nixpkgs, r-nixpkgs, nix2container, ... }:
     let
       system = "x86_64-linux";
-      pkgs = import nixpkgs { 
-        inherit system;
-        overlays = [
-          (final: prev: {
-            rEnv = prev.rWrapper.override {
-              packages = with prev.rPackages; [
-                plumber
-                jsonlite
-              ];
-            };
-          })
+      
+      # Standard pkgs for system tools
+      pkgs = import nixpkgs { inherit system; };
+      
+      # R-optimized pkgs (solves all library issues automatically)
+      pkgsR = import r-nixpkgs { inherit system; };
+      
+      n2c = nix2container.packages.${system}.nix2container;
+
+      # IDIOMATIC R ENVIRONMENT (rWrapper handles all deps: BLAS, LAPACK, PCRE, etc.)
+      rEnv = pkgsR.rWrapper.override {
+        packages = with pkgsR.rPackages; [ 
+          plumber 
+          jsonlite 
         ];
       };
-      n2c = nix2container.packages.${system}.nix2container;
+
+      # Application files
+      appFiles = pkgs.runCommand "plumber-app" { } ''
+        mkdir -p $out/app
+        cp ${./src/plumber.R} $out/app/plumber.R
+      '';
+
     in
     {
       packages.${system} = {
-        # --- Container for Cloud Run ---
+        # --- Container for Cloud Run (nix2container + rWrapper) ---
         container = n2c.buildImage {
           name = "hubspoke-demo";
           tag = self.shortRev or "latest";
-          copyToRoot = pkgs.buildEnv {
-            name = "container-root";
-            paths = [ 
-              pkgs.rEnv
-              pkgs.curl        # For health checks
-              pkgs.coreutils   # Essential: provides uname, which, cat, etc.
-              # Copy plumber.R to /app in container
-              (pkgs.runCommand "app-files" {} ''
-                mkdir -p $out/app
-                cp ${./src/plumber.R} $out/app/plumber.R
-              '')
-            ];
-          };
           
+          # rEnv contains R, Rscript, plumber, jsonlite, and all system libraries
+          contents = [
+            rEnv           # Self-contained R environment
+            pkgs.bash      # Shell access
+            pkgs.coreutils # Basic tools
+            appFiles       # Application code
+          ];
+
           config = {
+            # rWrapper sets up R_LIBS_SITE automatically
             Cmd = [ 
-              "${pkgs.rEnv}/bin/Rscript"
+              "${rEnv}/bin/Rscript"
               "-e" 
               "pr <- plumber::plumb('/app/plumber.R'); pr$run(host='0.0.0.0', port=8080)"
             ];
-            ExposedPorts = { "8080/tcp" = {}; };
-            Env = [ 
-              "PORT=8080"
-              "R_HOME=${pkgs.rEnv}/lib/R"
-              "R_LIBS_USER=${pkgs.rEnv}/lib/R/library"
-              "PATH=${pkgs.rEnv}/bin:${pkgs.coreutils}/bin:${pkgs.curl}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-            ];
+            ExposedPorts = { "8080/tcp" = { }; };
             WorkingDir = "/app";
           };
         };
-
+        
         # --- GCE VM Image ---
         gce-image = self.nixosConfigurations.gce-server.config.system.build.images.gce;
 
         default = self.packages.${system}.container;
       };
 
-      nixosConfigurations.gce-server = nixpkgs.lib.nixosSystem {
+      # --- GCE NixOS Configuration (also uses rEnv from pkgsR) ---
+      nixosConfigurations.gce-server = pkgs.lib.nixosSystem {
         inherit system;
         modules = [
-          ({ pkgs, ... }: {
+          ({ config, pkgs, ... }: {
             nixpkgs.overlays = [
               (final: prev: {
-                rEnv = prev.rWrapper.override {
-                  packages = with prev.rPackages; [
-                    plumber
-                    jsonlite
-                  ];
-                };
+                # Use rEnv from rstats-on-nix (handles all dependencies)
+                rEnv = rEnv;
               })
             ];
             
@@ -89,11 +90,9 @@
             
             # Basic services
             services.openssh.enable = true;
-            
-            # Cloud-init for GCE metadata
             services.cloud-init.enable = true;
             
-            # Install R and plumber
+            # Install R and system tools
             environment.systemPackages = with pkgs; [ 
               rEnv
               curl
@@ -116,7 +115,7 @@
               wantedBy = [ "multi-user.target" ];
               serviceConfig = {
                 Type = "simple";
-                ExecStart = "${pkgs.rEnv}/bin/Rscript -e 'pr <- plumber::plumb(\"/etc/plumber.R\"); pr$run(host=\"0.0.0.0\", port=8080)'";
+                ExecStart = "${rEnv}/bin/Rscript -e 'pr <- plumber::plumb(\"/etc/plumber.R\"); pr$run(host=\"0.0.0.0\", port=8080)'";
                 Restart = "always";
                 RestartSec = 10;
                 Environment = "PORT=8080";
@@ -129,14 +128,13 @@
                 "${nixpkgs}/nixos/modules/virtualisation/google-compute-image.nix"
                 "${nixpkgs}/nixos/modules/profiles/qemu-guest.nix"
               ];
-              
-              # Open firewall for plumber
               networking.firewall.allowedTCPPorts = [ 8080 ];
             };
           })
         ];
       };
 
+      # --- Development Shell ---
       devShells.${system}.default = pkgs.mkShell {
         buildInputs = with pkgs; [ 
           rEnv
