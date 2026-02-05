@@ -75,7 +75,7 @@
       };
 
       # --- GCE NixOS Configuration (also uses rEnv from pkgsR) ---
-      nixosConfigurations.gce-server = pkgs.lib.nixosSystem {
+      nixosConfigurations.gce-server = nixpkgs.lib.nixosSystem {
         inherit system;
         modules = [
           ({ config, pkgs, ... }: {
