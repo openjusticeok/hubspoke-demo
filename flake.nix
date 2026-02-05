@@ -34,11 +34,40 @@
         ];
       };
 
-      # Application files
-      appFiles = pkgs.runCommand "plumber-app" { } ''
+      # App files mapped to /app
+      appFiles = pkgs.runCommand "app-files" { } ''
         mkdir -p $out/app
         cp ${./src/plumber.R} $out/app/plumber.R
       '';
+
+      # Entrypoint script mapped to /bin
+      # FIX: Escaped pr\$run so Bash doesn't eat the $ variable
+      entrypoint = pkgs.writeShellScriptBin "start-server" ''
+        ${rEnv}/bin/Rscript -e "pr <- plumber::plumb('/app/plumber.R'); pr\$run(host='0.0.0.0', port=8080)"
+      '';
+
+      # Unified container root filesystem
+      # Combines system (/bin) and app (/app) with explicit pathsToLink
+      containerRoot = pkgs.buildEnv {
+        name = "container-root";
+        paths = [
+          rEnv           # R with all libs
+          pkgs.bash      # Shell for debugging
+          pkgs.coreutils # Basic tools
+          appFiles       # plumber.R at /app/
+          entrypoint     # start-server at /bin/
+          # Create /tmp directory (R requires writable temp space)
+          (pkgs.runCommand "tmp-dir" {} ''
+            mkdir -p $out/tmp
+            chmod 1777 $out/tmp
+          '')
+        ];
+        pathsToLink = [ 
+          "/bin"         # Expose /bin/
+          "/app"         # Expose /app/
+          "/tmp"         # Expose /tmp/ (R requires writable temp space)
+        ];
+      };
 
     in
     {
@@ -48,23 +77,17 @@
           name = "hubspoke-demo";
           tag = self.shortRev or "latest";
           
-          # rEnv contains R, Rscript, plumber, jsonlite, and all system libraries
-          contents = [
-            rEnv           # Self-contained R environment
-            pkgs.bash      # Shell access
-            pkgs.coreutils # Basic tools
-            appFiles       # Application code
-          ];
+          # Unified copyToRoot - nix2container creates /bin and /app
+          copyToRoot = containerRoot;
 
           config = {
-            # rWrapper sets up R_LIBS_SITE automatically
+            # Use entrypoint script with properly escaped R code
             Cmd = [ 
-              "${rEnv}/bin/Rscript"
-              "-e" 
-              "pr <- plumber::plumb('/app/plumber.R'); pr$run(host='0.0.0.0', port=8080)"
+              "/bin/start-server"
             ];
             ExposedPorts = { "8080/tcp" = { }; };
             WorkingDir = "/app";
+            Env = [ "PATH=/bin:/usr/bin" ];
           };
         };
         
