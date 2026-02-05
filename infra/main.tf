@@ -169,13 +169,30 @@ resource "google_compute_image" "nixos" {
   }
 }
 
+# Firewall rule to allow HTTP traffic to GCE instances
+resource "google_compute_firewall" "allow_http" {
+  depends_on = [google_compute_network.vpc]
+  name       = "${var.project_id}-allow-http"
+  network    = google_compute_network.vpc.name
+  direction  = "INGRESS"
+
+  allow {
+    protocol = "tcp"
+    ports    = ["8080"]
+  }
+
+  source_ranges = ["0.0.0.0/0"]
+  target_tags   = ["http-server"]
+}
+
 # Optional: GCE Instance
 resource "google_compute_instance" "api" {
-  depends_on   = [google_compute_network.vpc]
+  depends_on   = [google_compute_network.vpc, google_compute_firewall.allow_http]
   count        = var.deploy_vm ? 1 : 0
   name         = "hubspoke-demo-${var.environment}"
   machine_type = "e2-medium"
   zone         = "${var.region}-a"
+  tags         = ["http-server"]
 
   boot_disk {
     initialize_params {
