@@ -45,8 +45,14 @@ jobs:
           echo "VERSION=${{ inputs.version }}" >> $GITHUB_ENV
           echo "SOURCE_REPO=us-central1-docker.pkg.dev/${{ inputs.source_project }}/repo/hubspoke-demo" >> $GITHUB_ENV
           echo "TARGET_REPO=us-central1-docker.pkg.dev/${{ inputs.target_project }}/repo/hubspoke-demo" >> $GITHUB_ENV
-          echo "SOURCE_BUCKET=gs://${{ inputs.source_project }}-nixos-images" >> $GITHUB_ENV
-          echo "TARGET_BUCKET=gs://${{ inputs.target_project }}-nixos-images" >> $GITHUB_ENV
+          # Bucket naming: {app-name}-{env}-nixos-images (without the random project suffix)
+          # Extract base name by removing last 5 chars (e.g., "-b87d" or "-f01c") from project ID
+          SOURCE_BUCKET_NAME=$(echo "${{ inputs.source_project }}" | sed 's/-[a-f0-9]\{4\}$//')-nixos-images
+          TARGET_BUCKET_NAME=$(echo "${{ inputs.target_project }}" | sed 's/-[a-f0-9]\{4\}$//')-nixos-images
+          echo "SOURCE_BUCKET=gs://$SOURCE_BUCKET_NAME" >> $GITHUB_ENV
+          echo "TARGET_BUCKET=gs://$TARGET_BUCKET_NAME" >> $GITHUB_ENV
+          echo "📦 Source bucket: gs://$SOURCE_BUCKET_NAME"
+          echo "📦 Target bucket: gs://$TARGET_BUCKET_NAME"
 
       # Install Skopeo (not on ubuntu-latest by default)
       - name: Install Skopeo
