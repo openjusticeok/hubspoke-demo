@@ -54,6 +54,13 @@ jobs:
           echo "  Prod Project: $PROJECT_ID"
           echo "  Dev Project: $DEV_PROJECT_ID"
 
+      - uses: 'google-github-actions/auth@v2'
+        with:
+          workload_identity_provider: '${{ secrets.GCP_WIF_PROVIDER }}'
+          service_account: ${{ steps.parse.outputs.service_account }}
+
+      - uses: 'google-github-actions/setup-gcloud@v2'
+
       - name: Verify Artifacts Exist in Dev
         run: |
           VERSION="${{ steps.parse.outputs.version }}"
