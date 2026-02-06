@@ -7,8 +7,7 @@ on:
       - 'infra/prod.tfvars'
   workflow_dispatch:
 
-# CRITICAL FIX: Concurrency Control
-# Only one prod deploy at a time, do NOT cancel in-progress
+# CRITICAL: Concurrency Control
 concurrency:
   group: production-deployment
   cancel-in-progress: false
@@ -18,48 +17,110 @@ permissions:
   id-token: write
 
 jobs:
-  deploy-prod:
-    environment: production
+  # Phase 1: Extract and verify configuration
+  config:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.parse.outputs.version }}
+      service_account: ${{ steps.parse.outputs.service_account }}
+      state_bucket: ${{ steps.parse.outputs.state_bucket }}
+      project_id: ${{ steps.parse.outputs.project_id }}
+      dev_project_id: ${{ steps.parse.outputs.dev_project_id }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Parse Environment Config
-        id: config
+        id: parse
         run: |
+          PROJECT_ID=$(grep -E '^\s*project_id\s*=' infra/prod.tfvars | head -1 | sed -E 's/.*=\s*"([^"]+)".*/\1/')
           SA=$(grep -E '^\s*service_account\s*=' infra/prod.tfvars | head -1 | sed -E 's/.*=\s*"([^"]+)".*/\1/')
           BUCKET=$(grep -E '^\s*state_bucket\s*=' infra/prod.tfvars | head -1 | sed -E 's/.*=\s*"([^"]+)".*/\1/')
           VERSION=$(grep -E '^\s*image_version\s*=' infra/prod.tfvars | head -1 | sed -E 's/.*=\s*"([^"]+)".*/\1/')
+          
+          # Derive dev project ID (replace -prod- with -dev-)
+          DEV_PROJECT_ID=$(echo $PROJECT_ID | sed 's/-prod-/-dev-/')
+          
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "service_account=$SA" >> $GITHUB_OUTPUT
           echo "state_bucket=$BUCKET" >> $GITHUB_OUTPUT
-          echo "image_version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Deploying version: $VERSION"
+          echo "project_id=$PROJECT_ID" >> $GITHUB_OUTPUT
+          echo "dev_project_id=$DEV_PROJECT_ID" >> $GITHUB_OUTPUT
+          
+          echo "📋 Configuration:"
+          echo "  Version: $VERSION"
+          echo "  Prod Project: $PROJECT_ID"
+          echo "  Dev Project: $DEV_PROJECT_ID"
+
+  # Phase 2: Promote artifacts from dev to prod
+  promote:
+    needs: config
+    uses: ./.github/workflows/promote-artifacts.yml
+    with:
+      version: ${{ needs.config.outputs.version }}
+      source_project: ${{ needs.config.outputs.dev_project_id }}
+      target_project: ${{ needs.config.outputs.project_id }}
+      gcp_wif_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+
+  # Phase 3: Deploy infrastructure
+  deploy:
+    needs: [config, promote]
+    # Only proceed if promotion succeeded (not if it was skipped)
+    if: always() && needs.promote.result == 'success'
+    environment: production  # Requires GitHub Environment protection
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
 
       - uses: 'google-github-actions/auth@v2'
         with:
           workload_identity_provider: '${{ secrets.GCP_WIF_PROVIDER }}'
-          service_account: ${{ steps.config.outputs.service_account }}
+          service_account: ${{ needs.config.outputs.service_account }}
 
       - uses: opentofu/setup-opentofu@v1
         with:
           tofu_version: '1.8.1'
 
+      - uses: actions/cache@v4
+        with:
+          path: ~/.terraform.d/plugin-cache
+          key: tofu-plugins-${{ runner.os }}-${{ hashFiles('infra/.terraform.lock.hcl') }}
+
+      - name: Configure Tofu Plugin Cache
+        run: |
+          mkdir -p ~/.terraform.d/plugin-cache
+          echo "plugin_cache_dir = \"$HOME/.terraform.d/plugin-cache\"" > ~/.terraformrc
+
       - name: Tofu Init
         working-directory: ./infra
-        run: tofu init -backend-config="bucket=${{ steps.config.outputs.state_bucket }}"
+        run: tofu init -backend-config="bucket=${{ needs.config.outputs.state_bucket }}"
 
       - name: Tofu Plan
+        id: plan
         working-directory: ./infra
         run: |
+          echo "📋 Running tofu plan..."
           tofu plan \
             -var-file="prod.tfvars" \
-            -no-color
+            -no-color \
+            -out=tfplan
 
       - name: Tofu Apply
+        id: apply
         if: github.ref == 'refs/heads/main'
         working-directory: ./infra
         run: |
-          tofu apply \
-            -var-file="prod.tfvars" \
-            -auto-approve \
-            -no-color
+          echo "🚀 Applying infrastructure changes..."
+          tofu apply tfplan -no-color
+
+      # NOTE: No automatic rollback on failure - artifacts are preserved
+      # for retry. Manual cleanup available via workflow_dispatch if needed.
+      - name: Deployment Summary
+        if: always()
+        run: |
+          if [ "${{ steps.apply.outcome }}" == "success" ]; then
+            echo "✅ Deployment completed successfully"
+          else
+            echo "❌ Deployment failed - artifacts preserved in prod for retry"
+            echo "   Container: us-central1-docker.pkg.dev/${{ needs.config.outputs.project_id }}/repo/hubspoke-demo:${{ needs.config.outputs.version }}"
+            echo "   GCE Image: gs://${{ needs.config.outputs.project_id }}-nixos-images/nixos-image-${{ needs.config.outputs.version }}.tar.gz"
+          fi

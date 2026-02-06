@@ -1,0 +1,183 @@
+name: "Promote Artifacts"
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: 'Version/SHA to promote'
+        required: true
+        type: string
+      source_project:
+        description: 'Source GCP project ID'
+        required: true
+        type: string
+      target_project:
+        description: 'Target GCP project ID'
+        required: true
+        type: string
+      gcp_wif_provider:
+        description: 'GCP Workload Identity Provider (from calling workflow secrets)'
+        required: true
+        type: string
+    outputs:
+      container_copied:
+        description: 'Whether container was copied (true/false)'
+        value: ${{ jobs.promote.outputs.container_copied }}
+      gce_image_copied:
+        description: 'Whether GCE image was copied (true/false)'
+        value: ${{ jobs.promote.outputs.gce_image_copied }}
+      promotion_failed:
+        description: 'Whether promotion encountered an error'
+        value: ${{ jobs.promote.outputs.promotion_failed }}
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    outputs:
+      container_copied: ${{ steps.copy-container.outputs.copied }}
+      gce_image_copied: ${{ steps.copy-gce.outputs.copied }}
+      promotion_failed: ${{ steps.cleanup.outputs.failed }}
+    steps:
+      - name: Set Environment Variables
+        run: |
+          echo "SOURCE_PROJECT=${{ inputs.source_project }}" >> $GITHUB_ENV
+          echo "TARGET_PROJECT=${{ inputs.target_project }}" >> $GITHUB_ENV
+          echo "VERSION=${{ inputs.version }}" >> $GITHUB_ENV
+          echo "SOURCE_REPO=us-central1-docker.pkg.dev/${{ inputs.source_project }}/repo/hubspoke-demo" >> $GITHUB_ENV
+          echo "TARGET_REPO=us-central1-docker.pkg.dev/${{ inputs.target_project }}/repo/hubspoke-demo" >> $GITHUB_ENV
+          echo "SOURCE_BUCKET=gs://${{ inputs.source_project }}-nixos-images" >> $GITHUB_ENV
+          echo "TARGET_BUCKET=gs://${{ inputs.target_project }}-nixos-images" >> $GITHUB_ENV
+
+      # Install Skopeo (not on ubuntu-latest by default)
+      - name: Install Skopeo
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y skopeo
+          skopeo --version
+
+      # Authenticate to TARGET project (where we're deploying)
+      # Note: Using input.gcp_wif_provider which is passed from calling workflow
+      - uses: 'google-github-actions/auth@v2'
+        with:
+          workload_identity_provider: '${{ inputs.gcp_wif_provider }}'
+          service_account: 'tofu-provisioner@${{ inputs.target_project }}.iam.gserviceaccount.com'
+
+      - uses: 'google-github-actions/setup-gcloud@v2'
+
+      - name: Verify Source Artifacts Exist
+        id: verify
+        run: |
+          echo "🔍 Verifying artifacts in source project..."
+          
+          # Check container exists in dev
+          if ! gcloud artifacts docker images describe "$SOURCE_REPO:$VERSION" --project=$SOURCE_PROJECT > /dev/null 2>&1; then
+            echo "::error::Container $SOURCE_REPO:$VERSION not found in source project"
+            exit 1
+          fi
+          echo "✅ Container verified: $SOURCE_REPO:$VERSION"
+          
+          # Check GCE image exists in dev
+          if ! gcloud storage ls "$SOURCE_BUCKET/nixos-image-$VERSION.tar.gz" > /dev/null 2>&1; then
+            echo "::error::GCE image $SOURCE_BUCKET/nixos-image-$VERSION.tar.gz not found"
+            exit 1
+          fi
+          echo "✅ GCE image verified: $SOURCE_BUCKET/nixos-image-$VERSION.tar.gz"
+
+      - name: Copy Container Image
+        id: copy-container
+        run: |
+          # Check if already exists in target
+          if gcloud artifacts docker images describe "$TARGET_REPO:$VERSION" --project=$TARGET_PROJECT > /dev/null 2>&1; then
+            echo "::notice::Container $VERSION already exists in target, skipping copy"
+            echo "copied=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          echo "📦 Copying container from $SOURCE_PROJECT to $TARGET_PROJECT..."
+          
+          # Get auth token for target (already authenticated to target project)
+          TARGET_TOKEN=$(gcloud auth print-access-token)
+          
+          # Configure docker auth for skopeo
+          skopeo copy \
+            --src-creds="oauth2accesstoken:$(gcloud auth print-access-token)" \
+            --dest-creds="oauth2accesstoken:$TARGET_TOKEN" \
+            "docker://$SOURCE_REPO:$VERSION" \
+            "docker://$TARGET_REPO:$VERSION"
+          
+          echo "✅ Container copied successfully"
+          echo "copied=true" >> $GITHUB_OUTPUT
+
+      - name: Copy GCE Image
+        id: copy-gce
+        run: |
+          # Check if already exists in target
+          if gcloud storage ls "$TARGET_BUCKET/nixos-image-$VERSION.tar.gz" > /dev/null 2>&1; then
+            echo "::notice::GCE image $VERSION already exists in target, skipping copy"
+            echo "copied=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          echo "💾 Copying GCE image from source to target..."
+          
+          gcloud storage cp \
+            --no-clobber \
+            "$SOURCE_BUCKET/nixos-image-$VERSION.tar.gz" \
+            "$TARGET_BUCKET/nixos-image-$VERSION.tar.gz"
+          
+          echo "✅ GCE image copied successfully"
+          echo "copied=true" >> $GITHUB_OUTPUT
+
+      - name: Verify Target Artifacts
+        id: verify-target
+        run: |
+          echo "🔍 Verifying artifacts in target project..."
+          
+          if ! gcloud artifacts docker images describe "$TARGET_REPO:$VERSION" --project=$TARGET_PROJECT > /dev/null 2>&1; then
+            echo "::error::Container verification failed in target project"
+            exit 1
+          fi
+          
+          if ! gcloud storage ls "$TARGET_BUCKET/nixos-image-$VERSION.tar.gz" > /dev/null 2>&1; then
+            echo "::error::GCE image verification failed in target project"
+            exit 1
+          fi
+          
+          echo "✅ All artifacts verified in target project"
+
+      - name: Audit Promotion
+        if: success()
+        run: |
+          # Create audit record
+          AUDIT_FILE="promotion-$(date +%Y%m%d-%H%M%S).json"
+          cat > $AUDIT_FILE <<EOF
+          {
+            "timestamp": "$(date -Iseconds)",
+            "version": "${{ inputs.version }}",
+            "source_project": "${{ inputs.source_project }}",
+            "target_project": "${{ inputs.target_project }}",
+            "workflow_run_id": "${{ github.run_id }}",
+            "actor": "${{ github.actor }}",
+            "sha": "${{ github.sha }}",
+            "container_copied": ${{ steps.copy-container.outputs.copied }},
+            "gce_image_copied": ${{ steps.copy-gce.outputs.copied }}
+          }
+          EOF
+          
+          # Store audit record in target bucket
+          gcloud storage cp $AUDIT_FILE "$TARGET_BUCKET/audits/$AUDIT_FILE"
+          echo "✅ Audit record stored"
+
+      # CRITICAL: Only cleanup if promotion ITSELF failed, not if downstream deploy fails
+      - name: Cleanup on Promotion Failure
+        id: cleanup
+        if: failure() && (steps.copy-container.outcome == 'failure' || steps.copy-gce.outcome == 'failure' || steps.verify-target.outcome == 'failure')
+        run: |
+          echo "::warning::Promotion failed - cleaning up partial artifacts..."
+          echo "failed=true" >> $GITHUB_OUTPUT
+          
+          # Only delete what we might have partially copied
+          gcloud artifacts docker images delete "$TARGET_REPO:$VERSION" --project=$TARGET_PROJECT --quiet || true
+          gcloud storage rm "$TARGET_BUCKET/nixos-image-$VERSION.tar.gz" --quiet || true
+          
+          echo "🧹 Cleanup complete"

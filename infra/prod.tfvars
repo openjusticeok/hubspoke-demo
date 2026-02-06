@@ -10,7 +10,8 @@ state_bucket = "hubspoke-demo-prod-tfstate"
 # Artifact Storage (for NixOS images)
 artifact_bucket = "hubspoke-demo-prod-nixos-images"
 
-image_version = "PLACEHOLDER"
+# Git SHA from dev build (both container and GCE image exist at this version)
+image_version = "f7cf573"
 region        = "us-central1"
 environment   = "prod"
 deploy_vm     = true
