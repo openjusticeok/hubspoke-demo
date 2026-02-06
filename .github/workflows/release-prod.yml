@@ -4,8 +4,7 @@ on:
   push:
     branches: [main]
     paths:
-      - 'versions.yaml'
-      - '.github/workflows/release-prod.yml'
+      - 'infra/prod.tfvars'
   workflow_dispatch:
 
 # CRITICAL: Concurrency Control
@@ -18,7 +17,7 @@ permissions:
   id-token: write
 
 jobs:
-  # Phase 1: Extract and verify configuration from versions.yaml
+  # Phase 1: Extract and verify configuration
   config:
     runs-on: ubuntu-latest
     outputs:
@@ -30,28 +29,28 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Parse versions.yaml and Environment Config
+      - name: Parse Configuration
         id: parse
         run: |
-          # Read the SHA from versions.yaml (dev section)
-          DEV_SHA=$(grep -A 1 "^dev:" versions.yaml | grep "image_version:" | sed 's/.*image_version: *//' | tr -d '" ')
+          # Read all config from prod.tfvars
+          PROJECT_ID=$(grep -E '^\s*project_id\s*=' infra/prod.tfvars | head -1 | sed -E 's/.*=\s*"([^"]+)".*/\1/')
+          SA=$(grep -E '^\s*service_account\s*=' infra/prod.tfvars | head -1 | sed -E 's/.*=\s*"([^"]+)".*/\1/')
+          BUCKET=$(grep -E '^\s*state_bucket\s*=' infra/prod.tfvars | head -1 | sed -E 's/.*=\s*"([^"]+)".*/\1/')
+          # Read the version you manually set in prod.tfvars
+          VERSION=$(grep -E '^\s*image_version\s*=' infra/prod.tfvars | head -1 | sed -E 's/.*=\s*"([^"]+)".*/\1/')
           
-          # Read from prod.tfvars
-          PROJECT_ID=$(grep -E '^\s*project_id\s*=' infra/prod.tfvars | head -1 | sed -E 's/.*=\s*"([^"+)".*/\1/')
-          SA=$(grep -E '^\s*service_account\s*=' infra/prod.tfvars | head -1 | sed -E 's/.*=\s*"([^"+)".*/\1/')
-          BUCKET=$(grep -E '^\s*state_bucket\s*=' infra/prod.tfvars | head -1 | sed -E 's/.*=\s*"([^"+)".*/\1/')
+          # Derive dev project ID from prod service account
+          # Format: tofu-provisioner@hubspoke-demo-dev-b87d.iam.gserviceaccount.com
+          DEV_PROJECT_ID=$(echo "$SA" | sed -E 's/.*@([^\.]+)\.iam\.gserviceaccount\.com/\1/' | sed 's/-prod-[a-f0-9]\{4\}/-dev-b87d/')
           
-          # Derive dev project ID (strip -prod- suffix and add -dev- pattern)
-          DEV_PROJECT_ID=$(echo "$PROJECT_ID" | sed 's/-prod-[a-f0-9]\{4\}/-dev-b87d/')
-          
-          echo "version=$DEV_SHA" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "service_account=$SA" >> $GITHUB_OUTPUT
           echo "state_bucket=$BUCKET" >> $GITHUB_OUTPUT
           echo "project_id=$PROJECT_ID" >> $GITHUB_OUTPUT
           echo "dev_project_id=$DEV_PROJECT_ID" >> $GITHUB_OUTPUT
           
           echo "📋 Configuration:"
-          echo "  Version (from versions.yaml): $DEV_SHA"
+          echo "  Version (from prod.tfvars): $VERSION"
           echo "  Prod Project: $PROJECT_ID"
           echo "  Dev Project: $DEV_PROJECT_ID"
 
@@ -127,7 +126,6 @@ jobs:
           echo "📋 Running tofu plan..."
           tofu plan \
             -var-file="prod.tfvars" \
-            -var="image_version=${{ needs.config.outputs.version }}" \
             -no-color \
             -out=tfplan
 
@@ -137,22 +135,6 @@ jobs:
         run: |
           echo "🚀 Applying infrastructure changes..."
           tofu apply tfplan -no-color
-
-      - name: Update versions.yaml Prod Section
-        if: success()
-        run: |
-          VERSION="${{ needs.config.outputs.version }}"
-          TIMESTAMP=$(date -Iseconds)
-          
-          # Update versions.yaml with prod deployment info
-          sed -i "/^prod:/,/^[^ ]/{s/image_version:.*/image_version: \"$VERSION\"/}" versions.yaml
-          sed -i "/^prod:/,/^[^ ]/{s/promoted_at:.*/promoted_at: \"$TIMESTAMP\"/}" versions.yaml
-          
-          git config --local user.email "github-actions[bot]@users.noreply.github.com"
-          git config --local user.name "github-actions[bot]"
-          git add versions.yaml
-          git commit -m "docs: update prod version to $VERSION [skip ci]"
-          git push
 
       - name: Deployment Summary
         if: always()
