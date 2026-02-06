@@ -37,8 +37,11 @@ jobs:
           BUCKET=$(grep -E '^\s*state_bucket\s*=' infra/prod.tfvars | head -1 | sed -E 's/.*=\s*"([^"]+)".*/\1/')
           VERSION=$(grep -E '^\s*image_version\s*=' infra/prod.tfvars | head -1 | sed -E 's/.*=\s*"([^"]+)".*/\1/')
           
-          # Derive dev project ID (replace -prod- with -dev-)
-          DEV_PROJECT_ID=$(echo $PROJECT_ID | sed 's/-prod-/-dev-/')
+          # Derive dev project ID from prod service account
+          # Extract project ID from service account (e.g., tofu-provisioner@hubspoke-demo-prod-f01c.iam.gserviceaccount.com)
+          # and replace -prod- with -dev- to get the pattern, then use known dev suffix
+          PROD_SUFFIX=$(echo "$PROJECT_ID" | grep -oE '[a-f0-9]{4}$')
+          DEV_PROJECT_ID="hubspoke-demo-dev-b87d"
           
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "service_account=$SA" >> $GITHUB_OUTPUT
