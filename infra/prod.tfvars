@@ -11,9 +11,8 @@ state_bucket = "hubspoke-demo-prod-tfstate"
 artifact_bucket = "hubspoke-demo-prod-nixos-images"
 
 # Git SHA from dev build (both container and GCE image exist at this version)
-image_version = "f7cf573"
+image_version = "935b9e1"
 region        = "us-central1"
 environment   = "prod"
 deploy_vm     = true
 
-# Trigger build Fri Feb  6 12:15:47 PM CST 2026
