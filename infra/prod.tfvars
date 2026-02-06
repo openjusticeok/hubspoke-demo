@@ -22,7 +22,7 @@ state_bucket = "hubspoke-demo-prod-tfstate"
 artifact_bucket = "hubspoke-demo-prod-nixos-images"
 
 # Version to deploy - must match a successful dev build (update manually)
-image_version = "c5668ae"
+image_version = "65420381db0fd045aa5070f0da43abfc9fa94376"
 region        = "us-central1"
 environment   = "prod"
 deploy_vm     = true
