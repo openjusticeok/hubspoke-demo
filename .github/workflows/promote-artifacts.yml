@@ -15,10 +15,10 @@ on:
         description: 'Target GCP project ID'
         required: true
         type: string
+    secrets:
       gcp_wif_provider:
-        description: 'GCP Workload Identity Provider (from calling workflow secrets)'
+        description: 'GCP Workload Identity Provider'
         required: true
-        type: string
     outputs:
       container_copied:
         description: 'Whether container was copied (true/false)'
@@ -56,10 +56,10 @@ jobs:
           skopeo --version
 
       # Authenticate to TARGET project (where we're deploying)
-      # Note: Using input.gcp_wif_provider which is passed from calling workflow
+      # Note: Using secrets.gcp_wif_provider which is passed from calling workflow
       - uses: 'google-github-actions/auth@v2'
         with:
-          workload_identity_provider: '${{ inputs.gcp_wif_provider }}'
+          workload_identity_provider: '${{ secrets.gcp_wif_provider }}'
           service_account: 'tofu-provisioner@${{ inputs.target_project }}.iam.gserviceaccount.com'
 
       - uses: 'google-github-actions/setup-gcloud@v2'

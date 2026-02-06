@@ -59,6 +59,7 @@ jobs:
       version: ${{ needs.config.outputs.version }}
       source_project: ${{ needs.config.outputs.dev_project_id }}
       target_project: ${{ needs.config.outputs.project_id }}
+    secrets:
       gcp_wif_provider: ${{ secrets.GCP_WIF_PROVIDER }}
 
   # Phase 3: Deploy infrastructure
