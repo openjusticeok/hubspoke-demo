@@ -41,9 +41,9 @@
       '';
 
       # Entrypoint script mapped to /bin
-      # FIX: Escaped pr\$run so Bash doesn't eat the $ variable
+      # Uses direct store path to Rscript for reliability in containerized environments
       entrypoint = pkgs.writeShellScriptBin "start-server" ''
-        ${rEnv}/bin/Rscript -e "pr <- plumber::plumb('/app/plumber.R'); pr\$run(host='0.0.0.0', port=8080)"
+        exec ${rEnv}/bin/Rscript -e "pr <- plumber::plumb('/app/plumber.R'); pr\$run(host='0.0.0.0', port=8080)"
       '';
 
       # Unified container root filesystem
